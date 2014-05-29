@@ -40,8 +40,9 @@ _max_pulse_number_lower = 255
 
 _cmd_fire_continuous = "a" #Continuous pulsing
 _cmd_fire_series = "g" #Sequence pulsing
-_buffer_end_sequence = "K"
+_buffer_end_sequence = "K" #Denotes end of sequence
 _cmd_stop = "@" #STOP!
+_cmd_channel_clear = "C" #Clear settings
 _cmd_ph_hi = "L" #Pulse height hi
 _cmd_ph_lo = "M" #Pulse height lo
 _cmd_ph_end = "P" #Pulse height load
@@ -222,6 +223,11 @@ class SerialCommand(object):
             not_set += ["Pulse delay"]
         if not_set != []:
             raise laserball_exception.LaserballException("Undefined options: %s" % (", ".join(opt for opt in not_set)))
+
+    def clear_channel(self):
+        """Unselect the channel"""
+        self.logger.debug("Clear channel")
+        self._send_command(_cmd_channel_clear)
 
     def clear_settings(self):
         """Clear settings all settings"""

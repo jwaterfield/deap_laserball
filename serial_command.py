@@ -63,7 +63,7 @@ class SerialCommand(object):
     def __init__(self, port_name=None):
         """Initialise the serial command"""
         if not port_name:
-            self._port_name = "/dev/tty.usbserial-FTE3C0PG"
+            self._port_name = "/dev/tty.usbserial-FTWWV9EA"
         else:
             self._port_name = port_name
         # This is the same as a sleep, but with the advantage of breaking

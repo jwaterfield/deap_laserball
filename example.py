@@ -15,7 +15,7 @@
 ###################################
 
 import optparse
-from core import serial_command
+import serial_command
 
 if __name__=="__main__":
     parser = optparse.OptionParser()

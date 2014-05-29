@@ -46,7 +46,7 @@ class LaserballLogger:
 
         def __call__(self, *args, **kw):
             if LaserballLogger._instance is None:
-                object = TellieLogger()
+                object = LaserballLogger()
                 LaserballLogger._instance = object
 
             return LaserballLogger._instance

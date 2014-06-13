@@ -54,6 +54,7 @@ _cmd_pn_lo = "G" #Pulse number lo
 _cmd_pd = "u" #Pulse delay
 #_cmd_temp_read = "T" not currently implemented
 
+_cmd_list = ["a","g","K","@","C","L","M","P","Q","R","S","H","G","u","T"]
 
 class SerialCommand(object):
     """Serial command object.
@@ -68,11 +69,14 @@ class SerialCommand(object):
             self._port_name = port_name
         # This is the same as a sleep, but with the advantage of breaking
         # if enough characters are seen in the buffer.
-        self._port_timeout = 0.3
+        self._sleep = 0.005
+
+        self._port_timeout = 1
+        self._baud_rate = 2400
         self._serial = None
         self.logger = laserball_logger.LaserballLogger.get_instance()
         try:
-            self._serial = serial.Serial(port=self._port_name, timeout=self._port_timeout)
+            self._serial = serial.Serial(port=self._port_name, timeout=self._port_timeout, baudrate=self._baud_rate)
             self.logger.debug("Serial connection open: %s" % self._serial)
         except serial.SerialException, e:
             raise laserball_exception.LaserballSerialException(e)
@@ -83,12 +87,13 @@ class SerialCommand(object):
         self._current_pd = None
         #information on whether the laserball is being fired
         self._firing = 0 #must wait for firing to complete
+        self._firing_continuous = 0 #must wait for firing to complete
         self._reading = 0 #once a read command has been sent, dont send again!
         #if a new channel is selected should force setting all new parameters
         #restriction only lifted once a fire command has been called
         self._force_setting = False
         #send a reset, to ensure the RTS is set to false
-        self.reset()
+        #self.reset()
 
 
     def __del__(self):
@@ -100,8 +105,13 @@ class SerialCommand(object):
         """Many commands expect an empty buffer, fail if they are not!
         """
         buffer_read = self._serial.read(100)
-        if buffer_read != "":
-            raise laserball_exception.LaserballException("Buffer not clear: %s" % (buffer_read))
+        if "K" in buffer_read:
+            self._firing = False
+            self._firing_continuous = False
+        return buffer_read
+
+        #if buffer_read != "":
+        #    raise laserball_exception.LaserballException("Buffer not clear: %s" % (buffer_read))
 
     def _send_command(self, command, readout=True, buffer_check=None):
         """Send a command to the serial port.
@@ -109,32 +119,57 @@ class SerialCommand(object):
         Lists are used for e.g. a high/low bit command where
         the high bit could finish with an endline (i.e. endstream)"""
         self.logger.debug("_send_command:%s" % command)
+        buffer_check_full = ''
         if type(command) is str:
             command = [command]
         if type(command) is not list:
             raise laserball_exception.LaserballException("Command is not a list: %s %s" % (command, type(command)))
         try:
             for c in command:
+                if c == "C":
+                    buffer_check_full = c
+                else:
+                    buffer_check_full += c+c[:1]
                 self._serial.write(c)
+                time.sleep(0.1)        
         except:
             raise laserball_exception.LaserballException("Lost connection with Laserball control!")
-        if not buffer_check: # assume returns same as input
-            buffer_check = ''
-            for c in command:
+        buffer_check = ''
+        for c in buffer_check_full:
+            if c in _cmd_list:
                 buffer_check += c
         if readout is True:
             # One read command (with default timeout of 0.1s) should be
             # enough to get all the chars from the readout.
-            buffer_read = self._serial.read(len(buffer_check))
-            if str(buffer_read)!=str(buffer_check):
-                self.logger.debug("problem reading buffer, send %s, read %s" % (command, buffer_read))
+            # buffer contains charchters which are garbage following is to remove
+            buffer_read = ''
+            buffer_read_full = self.read_buffer()
+            for c in buffer_read_full:
+                if c in _cmd_list:
+                    buffer_read += c
+            buffer_check_2 = ''
+            if buffer_check== 'gg':
+                buffer_check_2 = 'ggK'
+            if len(buffer_read_full) > len(buffer_check) + 2:
+                self.logger.debug("problem reading buffer, send %s, read %s," % (command, buffer_read_full))
                 #clear anything else that might be in there
                 time.sleep(0.1)
                 remainder = self._serial.read(100)
                 self._serial.write("@") # send a stop
                 time.sleep(0.1)
                 self._serial.read(100)
-                message = "Unexpected buffer output:\nsaw: %s, remainder %s\nexpected: %s" % (buffer_read, remainder, buffer_check)
+                message = "Unexpected buffer output:\nsaw: %s, remainder %s,\nexpected: %s" % (buffer_read_full, remainder, buffer_check)
+                self.logger.warn(message)
+                raise laserball_exception.LaserballException(message)
+            elif str(buffer_read)!=str(buffer_check) and str(buffer_read) != str(buffer_check_2) :
+                self.logger.debug("problem reading buffer, send %s, read %s," % (command, buffer_read))
+                #clear anything else that might be in there
+                time.sleep(0.1)
+                remainder = self._serial.read(100)
+                self._serial.write("@") # send a stop
+                time.sleep(0.1)
+                self._serial.read(100)
+                message = "Unexpected buffer output:\nsaw: %s, remainder %s,\nexpected: %s" % (buffer_read, remainder, buffer_check)
                 self.logger.warn(message)
                 raise laserball_exception.LaserballException(message)
             else:
@@ -149,6 +184,13 @@ class SerialCommand(object):
         (will cause PIN readout to be flushed to buffer).
         """
         self.logger.debug("Send non-firing command")
+        if self._firing_continuous is True and while_fire is False:
+            raise laserball_exception.LaserballException("Cannot fire, already in continuous firing mode")
+        if self._firing is True and while_fire is False:
+            while "K" not in str(self.read_buffer()):
+                print "Still firing... waiting for sequence to finish"
+                time.sleep(1)
+            self._firing = False
         if self._firing is True:
             if while_fire is False:
                 raise laserball_exception.LaserballException("Cannot run command, in firing mode")
@@ -172,12 +214,18 @@ class SerialCommand(object):
         # close the port and reopen?
         time.sleep(3.0)
 
+
     def fire(self, while_fire=False):
         """Fire laserball, place class into firing mode.
         Can send a fire command while already in fire mode if required."""
-        self.logger.debug("Fire!")
+        self.logger.debug("Fire!") 
+        if self._firing_continuous is True and while_fire is False:
+            raise laserball_exception.LaserballException("Cannot fire, already in continuous firing mode")
         if self._firing is True and while_fire is False:
-            raise laserball_exception.LaserballException("Cannot fire, already in firing mode")
+            while "K" not in str(self.read_buffer()):
+                print "Still firing... waiting for sequence to finish"
+                time.sleep(1)
+            self._firing = False
         self.check_ready()
         cmd = None
         buffer_check = _cmd_fire_series
@@ -193,20 +241,29 @@ class SerialCommand(object):
     def fire_continuous(self):
         """Fire Laserball in continous mode.
         """
-        if self._firing is True:
-            raise laserball_exception.LaserballException("Cannot fire, already in firing mode")
+        if self._firing_continuous is True and while_fire is False:
+            raise laserball_exception.LaserballException("Cannot fire, already in continuous firing mode")
+        if self._firing is True and while_fire is False:
+            while "K" not in str(self.read_buffer()):
+                print "Still firing... waiting for sequence to finish"
+                time.sleep(1)
+            self._firing = False
         self._send_command(_cmd_fire_continuous, False)
-        self._firing = True
+        self._firing_continuous = True
         self._force_setting = False
 
     def read_buffer(self, n=100):
-        return self._serial.read(n)
+        buffer = self._serial.read(n)
+        if "K" in buffer:
+            self._firing = False
+            self._firing_continuous = False
+        return buffer
 
     def stop(self):
         """Stop firing laserball"""
         self.logger.debug("Stop firing!")
         self._send_command(_cmd_stop, False)
-        buffer_contents = self._serial.read(100)
+        buffer_contents = self.read_buffer()
         self._firing = False
         return buffer_contents
 
@@ -227,7 +284,7 @@ class SerialCommand(object):
     def clear_channel(self):
         """Unselect the channel"""
         self.logger.debug("Clear channel")
-        self._send_command(_cmd_channel_clear)
+        self._send_command(_cmd_channel_clear, buffer_check=_cmd_channel_clear)
 
     def clear_settings(self):
         """Clear settings all settings"""
@@ -257,7 +314,7 @@ class SerialCommand(object):
             if while_fire and self._firing:
                 self._send_setting_command(command=command, while_fire=while_fire)
             else:
-                self._send__setting_command(command=command, buffer_check=buffer_check)
+                self._send_setting_command(command=command, buffer_check=buffer_check)
             self._current_pw = par
 
     def set_pulse_number(self, par):
